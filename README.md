@@ -20,7 +20,7 @@
 ## Dataset 
 使用公开数据集，github中提供了其中的一部分预处理后的数据集，源数据集暂且不公开
 
-[fse-ss](./fse/)  是Sock-shop微服务系统的故障数据集，里面为Carts服务器cpu发生故障时的时序数据
+[fse-ss](./fse-ss/)  是Sock-shop微服务系统的故障数据集，里面为Carts服务器cpu发生故障时的时序数据
 
 
 
