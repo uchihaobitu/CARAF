@@ -69,19 +69,5 @@ class LinearCoModel:
         total_loss = total_loss / (self.d * self.d)  # 为了保持和原始代码的一致性，除以 d^2
         return total_loss.mean(), total_grad
 
-# 示例使用
-# batch_size = 10
-# time_steps = 50
-# dimension = 3
-# X = np.random.randn(batch_size, time_steps, dimension)
-# model = LinearCoModel(X, loss_type='l2', lambda1=0.1, device='cuda')
-# W = torch.randn(dimension, dimension, device=model.device)
-#
-# total_loss, total_grad = model.integrated_loss(W, mu=0.5, s=1.0)
-#
-# print("Total Loss:", total_loss)
-# print("Total Gradient:", total_grad)
-# print("Total Loss Shape:", total_loss.shape)
-# print("Total Loss Data Type:", type(total_loss))
-# print("Total Gradient Shape:", total_grad.shape)
-# print("Total Gradient Data Type:", type(total_grad))
+
+
