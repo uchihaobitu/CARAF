@@ -465,7 +465,27 @@ def train_phase2(
     sparsity=100,
     batch_size=1024,
 ):
-    """Train model with Adam."""
+    """添加补偿网络的训练流程：联合优化CRVAE和VRAE模型
+    
+    参数:
+        crvae (CRVAE): 因果循环变分自编码器模型
+        vrae (VRAE): 补偿网络自编码器模型（用于误差建模）
+        X (list): 输入数据列表，每个元素为[样本数, 时间步长, 特征维度]的张量
+        context (int): 上下文窗口长度
+        lr (float): 学习率
+        max_iter (int): 最大迭代次数
+        lam (float): 稀疏正则化系数（默认0）
+        lam_ridge (float): L2正则化系数（默认0）
+        lookback (int): 早停观察窗口（默认5）
+        check_every (int): 验证间隔步数（默认50）
+        verbose (int): 日志详细程度（0/1）
+        sparsity (int): 稀疏性目标百分比（默认100）
+        batch_size (int): 批大小（默认1024）
+        
+    返回:
+        list: 训练损失记录
+
+    """
     optimizer = optim.Adam(vrae.parameters(), lr=1e-3)
     p = X.shape[-1]
     device = crvae.networks[0].gru.weight_ih_l0.device
@@ -625,18 +645,6 @@ def train_phase2(
     return train_loss_list
 
 
-# def cal_loss(X,connection):
-#     n, d = X.shape
-#     Id = np.eye(d).astype(np.float64)
-#     cov = X.T @ X / float(n)
-#     dif = Id - connection
-#     rhs = cov @ dif
-#     loss = 0.5 * np.trace(dif.T @ rhs)
-#     G_loss = -rhs
-#     loss = loss / d
-#     loss = loss / d
-#     return loss,G_loss
-
 def cal_loss_batched(Xs, connections):
     batch_size, n, d = Xs.shape
     Id = np.eye(d).astype(np.float64)
@@ -651,9 +659,10 @@ def cal_loss_batched(Xs, connections):
     return losses, G_losses
 
 
+
 def train_phase1(crvae, X, context, lr, max_iter, lam=0, lam_ridge=0,
                  lookback=5, check_every=50, verbose=1, sparsity=100, batch_size=2048):
-    '''Train model with Adam.'''
+    '''基线方法：Train model with Adam.'''
     p = X.shape[-1]
     device = crvae.networks[0].gru.weight_ih_l0.device
     loss_fn = nn.MSELoss()
@@ -773,173 +782,6 @@ def cal_loss_batched_torch(Xs, connections,device='cuda:0'):
     return losses, G_losses
 
 
-def train_phase4(
-    crvae,
-    X,
-    context,
-    lr,
-    max_iter,
-    lam=0,
-    lam_ridge=0,
-    lookback=5,
-    check_every=50,
-    verbose=1,
-    sparsity=100,
-    batch_size=2048,
-):
-    """Train model with Adam."""
-    p = X.shape[-1]
-    device = crvae.networks[0].gru.weight_ih_l0.device
-    loss_fn = nn.MSELoss()
-    train_loss_list = []
-    batch_size = batch_size
-    # Set up data.
-    X, Y = zip(*[arrange_input(x, context) for x in X])
-    X_all = torch.cat(X, dim=0)
-    Y_all = torch.cat(Y, dim=0)
-
-    idx = np.random.randint(len(X_all), size=(batch_size,))
-
-    X = X_all[idx]
-
-    Y = Y_all[idx]
-    start_point = 0
-    beta = 0.1
-    # For early stopping.
-    best_it = None
-    best_loss = np.inf
-    best_model = None
-
-    # Calculate crvae error.
-    pred, mu, log_var = crvae(X)
-
-    loss = sum([loss_fn(pred[i][:, :, 0], X[:, 10:, i]) for i in range(p)])
-
-    mmd = (
-        -0.5 * (1 + log_var - mu**2 - torch.exp(log_var)).sum(dim=-1).sum(dim=0)
-    ).mean(dim=0)
-    # mmd =  sum([MMD(torch.randn(200, Y[:, :, 0].shape[-1], requires_grad = False).to(device), latent[i][:,:,0]) for i in range(p)])
-    ridge = sum([ridge_regularize(net, lam_ridge) for net in crvae.networks])
-
-    # liner_loss = 0
-    # for x in X:
-    #     liner_loss += cal_loss(x.cpu().numpy(),crvae.connection)[0]
-    # liner_loss /= len(X)
-
-
-    # X_np = X.cpu().numpy()  # X 是原始的 PyTorch tensor
-
-    # print(X_np, X_np.shape)
-    # print(crvae.connection.shape)
-    # 计算所有样本的损失和梯度
-    losses, G_losses = cal_loss_batched_torch(X, torch.tensor(crvae.connection,device=device,dtype=torch.float32))
-
-    print("losses",losses,G_losses.shape,losses)
-
-    # 计算平均损失
-    average_loss = torch.mean(losses).item()
-
-    # smooth = loss + ridge + beta * mmd
-    smooth = loss + ridge + beta * mmd + average_loss
-    # print(smooth)
-
-    best_mmd = np.inf
-
-    ########################################################################
-    # lr = 1e-3
-    for it in range(max_iter):
-        # Take gradient step.
-        smooth.backward()
-        for param in crvae.parameters():
-            param.data -= lr * param.grad
-
-        # Take prox step.
-        if lam > 0:
-            for net in crvae.networks:
-                prox_update(net, lam, lr)
-
-        crvae.zero_grad()
-
-        pred, mu, log_var = crvae(X)
-        loss = sum([loss_fn(pred[i][:, :, 0], X[:, 10:, i]) for i in range(p)])
-
-        mmd = (
-            -0.5 * (1 + log_var - mu**2 - torch.exp(log_var)).sum(dim=-1).sum(dim=0)
-        ).mean(dim=0)
-
-        ridge = sum([ridge_regularize(net, lam_ridge) for net in crvae.networks])
-        smooth = loss + ridge + beta * mmd
-
-        losses, G_losses = cal_loss_batched_torch(X,torch.tensor(crvae.connection, device=device, dtype=torch.float32))
-
-        # print("losses", losses, G_losses.shape, losses)
-
-        # 计算平均损失
-        average_loss = torch.mean(losses).item()
-
-        # smooth = loss + ridge + beta * mmd
-        smooth = loss + ridge + beta * mmd + average_loss
-        # print(smooth)
-
-        # Check progress.
-        if (it) % check_every == 0:
-            X_t = X
-            Y_t = Y
-
-            pred_t, mu_t, log_var_t = crvae(X_t)
-
-            loss_t = sum(
-                [loss_fn(pred_t[i][:, :, 0], X_t[:, 10:, i]) for i in range(p)]
-            )
-
-            mmd_t = (
-                -0.5
-                * (1 + log_var_t - mu_t**2 - torch.exp(log_var_t))
-                .sum(dim=-1)
-                .sum(dim=0)
-            ).mean(dim=0)
-
-            ridge_t = sum([ridge_regularize(net, lam_ridge) for net in crvae.networks])
-
-            losses_t, G_losses_t = cal_loss_batched_torch(X,torch.tensor(crvae.connection,dtype=torch.float32,device=device))
-            # print("losses", losses, G_losses.shape)
-
-            # 计算平均损失
-            average_loss_t = torch.mean(losses_t).item()
-            smooth_t = loss_t + ridge_t + average_loss_t# + beta*mmd_t
-
-            nonsmooth = sum([regularize(net, lam) for net in crvae.networks])
-            mean_loss = (smooth_t) / p
-
-            if verbose > 0:
-                print(("-" * 10 + "Iter = %d" + "-" * 10) % (it))
-                print("Loss = %f" % mean_loss)
-                print("KL = %f" % mmd)
-
-                if lam > 0:
-                    print(
-                        "Variable usage = %.2f%%"
-                        % (100 * torch.mean(crvae.GC().float()))
-                    )
-
-            if mean_loss < best_loss:
-                best_loss = mean_loss
-                best_it = it
-                best_model = deepcopy(crvae)
-
-            start_point = 0
-            predicted_data = crvae(X_t, mode="test")
-            syn = predicted_data[:, :-1, :].cpu().detach().numpy()
-            ori = X_t[:, start_point:, :].cpu().detach().numpy()
-
-            syn = MinMaxScaler(syn)
-            ori = MinMaxScaler(ori)
-
-    # Restore best model.
-    restore_parameters(crvae, best_model)
-
-    return train_loss_list
-
 
 def train_phase3(
     crvae,
@@ -955,7 +797,36 @@ def train_phase3(
     sparsity=100,
     batch_size=2048,
 ):
-    """Train model with Adam."""
+    """带边评分函数的CRVAE优化
+
+    参数:
+        crvae (CRVAE): 因果循环变分自编码器模型
+        X (list): 输入数据列表，每个元素为[样本数, 时间步长, 特征维度]的张量  
+        context (int): 上下文窗口长度
+        lr (float): 学习率
+        max_iter (int): 最大迭代次数
+        lam (float): 稀疏正则化系数（默认0）
+        lam_ridge (float): L2正则化系数（默认0）
+        lookback (int): 早停观察窗口（默认5）
+        check_every (int): 验证间隔步数（默认50）
+        verbose (int): 日志详细程度（0/1）
+        sparsity (int): 稀疏性目标百分比（默认100）
+        batch_size (int): 批大小（默认2048）
+
+    返回:
+        list: 训练损失记录
+
+    算法流程:
+        1. 数据准备：滑动窗口处理
+        2. 四部分损失计算：
+           - 重构损失（MSE）
+           - KL散度（正则化潜在空间） 
+           - 岭回归（L2正则）
+           - 因果约束损失（评分函数）
+        3. 梯度下降优化
+        4. 近端算子处理稀疏性
+        5. 早停机制保留最佳模型
+    """
     p = X.shape[-1]
     device = crvae.networks[0].gru.weight_ih_l0.device
 
@@ -1106,166 +977,3 @@ def train_phase3(
     return train_loss_list
 
 
-def train_phase5(
-    crvae,
-    X,
-    context,
-    lr,
-    max_iter,
-    lam=0,
-    lam_ridge=0,
-    lookback=5,
-    check_every=50,
-    verbose=1,
-    sparsity=100,
-    batch_size=2048,
-):
-    """Train model with Adam."""
-    p = X.shape[-1]
-    device = crvae.networks[0].gru.weight_ih_l0.device
-
-    loss_fn = nn.MSELoss()
-    train_loss_list = []
-    batch_size = batch_size
-    # Set up data.
-    X, Y = zip(*[arrange_input(x, context) for x in X])
-    X_all = torch.cat(X, dim=0)
-    Y_all = torch.cat(Y, dim=0)
-
-    idx = np.random.randint(len(X_all), size=(batch_size,))
-
-    X = X_all[idx]
-
-    Y = Y_all[idx]
-
-
-    start_point = 0
-    beta = 0.1
-    # For early stopping.
-    best_it = None
-    best_loss = np.inf
-    best_model = None
-
-    # Calculate crvae error.
-    pred, mu, log_var = crvae(X)
-
-    loss = sum([loss_fn(pred[i][:, :, 0], X[:, 10:, i]) for i in range(p)])
-
-    mmd = (
-        -0.5 * (1 + log_var - mu**2 - torch.exp(log_var)).sum(dim=-1).sum(dim=0)
-    ).mean(dim=0)
-    # mmd =  sum([MMD(torch.randn(200, Y[:, :, 0].shape[-1], requires_grad = False).to(device), latent[i][:,:,0]) for i in range(p)])
-    ridge = sum([ridge_regularize(net, lam_ridge) for net in crvae.networks])
-
-    # liner_loss = 0
-    # for x in X:
-    #     liner_loss += cal_loss(x.cpu().numpy(),crvae.connection)[0]
-    # liner_loss /= len(X)
-
-    X_np = X.cpu().numpy()  # X 是原始的 PyTorch tensor
-    h_model = LinearCoModel(loss_type='l2', lambda1=0.1,device='cuda')
-    s_1=0.1
-    mu_1 = 0.5
-    # import pdb
-    # pdb.set_trace()
-
-    losses,G_grad = h_model.integrated_loss(pred,torch.tensor(crvae.connection,device=device,dtype=torch.float32), mu_1,s_1)
-    # print(X_np,X_np.shape)
-    # print(crvae.connection.shape)
-    # # 计算所有样本的损失和梯度
-    # losses, G_losses = cal_loss_batched(X_np, crvae.connection)
-
-    # 计算平均损失
-    # average_loss = np.mean(losses)
-    gamma = 10
-    # smooth = loss + ridge + beta * mmd
-    smooth = loss + ridge + beta * mmd + gamma * losses
-
-    best_mmd = np.inf
-
-    ########################################################################
-    # lr = 1e-3
-    for it in range(max_iter):
-        # Take gradient step.
-        smooth.backward()
-        for param in crvae.parameters():
-            # print("param.grad",param.grad)
-            # print("param.grad.shape",param.grad.shape)
-            param.data -= lr * param.grad
-
-
-
-        # Take prox step.
-        if lam > 0:
-            for net in crvae.networks:
-                prox_update(net, lam, lr)
-
-        crvae.zero_grad()
-
-        pred, mu, log_var = crvae(X)
-        loss = sum([loss_fn(pred[i][:, :, 0], X[:, 10:, i]) for i in range(p)])
-
-        mmd = (
-            -0.5 * (1 + log_var - mu**2 - torch.exp(log_var)).sum(dim=-1).sum(dim=0)
-        ).mean(dim=0)
-
-        ridge = sum([ridge_regularize(net, lam_ridge) for net in crvae.networks])
-        losses,G_grad = h_model.integrated_loss(pred,torch.tensor(crvae.connection,device=device,dtype=torch.float32), mu_1,s_1)
-        smooth = loss + ridge + beta * mmd + gamma * losses
-
-        # Check progress.
-        if (it) % check_every == 0:
-            X_t = X
-            Y_t = Y
-
-            pred_t, mu_t, log_var_t = crvae(X_t)
-
-            loss_t = sum(
-                [loss_fn(pred_t[i][:, :, 0], X_t[:, 10:, i]) for i in range(p)]
-            )
-
-            mmd_t = (
-                -0.5
-                * (1 + log_var_t - mu_t**2 - torch.exp(log_var_t))
-                .sum(dim=-1)
-                .sum(dim=0)
-            ).mean(dim=0)
-
-            ridge_t = sum([ridge_regularize(net, lam_ridge) for net in crvae.networks])
-
-            losses_t, G_grad_t = h_model.integrated_loss(pred,torch.tensor(crvae.connection,device=device,dtype=torch.float32), mu_1, s_1)
-            smooth_t = loss_t + ridge_t + gamma * losses_t # + beta*mmd_t
-
-            nonsmooth = sum([regularize(net, lam) for net in crvae.networks])
-            mean_loss = (smooth_t) / p
-
-            if verbose > 0:
-                print(("-" * 10 + "Iter = %d" + "-" * 10) % (it))
-                print("Losses = %f" % losses_t)
-                print("Loss = %f" % mean_loss)
-                print("KL = %f" % mmd)
-
-                if lam > 0:
-                    print(
-                        "Variable usage = %.2f%%"
-                        % (100 * torch.mean(crvae.GC().float()))
-                    )
-
-            if mean_loss < best_loss:
-                best_loss = mean_loss
-                best_it = it
-                best_model = deepcopy(crvae)
-
-            start_point = 0
-            predicted_data = crvae(X_t, mode="test")
-            syn = predicted_data[:, :-1, :].cpu().detach().numpy()
-            ori = X_t[:, start_point:, :].cpu().detach().numpy()
-
-            syn = MinMaxScaler(syn)
-            ori = MinMaxScaler(ori)
-
-
-    # Restore best model.
-    restore_parameters(crvae, best_model)
-
-    return train_loss_list
