@@ -12,7 +12,7 @@ import torch
 import os
 
 from os.path import join, dirname, basename
-from .models.cgru_error import CRVAE, VRAE4E, train_phase1,train_phase2,train_phase3,train_phase4
+from .models.cgru_error import CRVAE, VRAE4E, train_phase1,train_phase2,train_phase3
 
 def cause_trian(data_path,output_dir,device):
 
