@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sat Aug 6 20:01:33 2024
-
 @author: stx
 """
 
